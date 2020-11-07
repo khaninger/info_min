@@ -173,5 +173,5 @@ np.set_printoptions(precision=3)
 #k2_grid = np.linspace(3, 50, num = grid_size)  
 #perf, DI = param_grid(k1_grid, k2_grid)
 
-#grad_descent_test(D = 30.0)
+grad_descent_test(D = 30.0)
 #multiple_pts_compare()

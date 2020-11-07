@@ -1,0 +1,3 @@
+
+from meshcat.servers.zmqserver import start_zmq_server_as_subprocess
+proc, zmq_url, web_url = start_zmq_server_as_subprocess(server_args=server_args)
