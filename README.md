@@ -5,7 +5,8 @@ Code to minimize the directed information from system state to controller while 
 - iLQG
 - EKF
 - Gradient descent on Directed Information
-In addition to the linearization with respect to state and control; this approach requires the second derivative with respect to the design parameters over which the optimization should occur.  
+
+In addition to the derivatives with respect to state and control (for iLQG/EKF); this approach requires the second derivative with respect to the design parameters over which the optimization should occur.
 
 ## Dependencies
 This requires an install of [pydrake](https://drake.mit.edu/python_bindings.html) for autodiff functionalities. Tested with commit c4fd7bcd9cecf3de188c074f663a15f0ca76dee3. 
