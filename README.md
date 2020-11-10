@@ -1,7 +1,7 @@
 # Minimizing Directed Information
 
 ## Overview
-Code to minimize the directed information from system state to controller while maintaining a performance bound.  This is done on nonlinear systems by means of: 
+Python implementation to minimize the directed information from system state to controller while maintaining a performance bound.  This is done on nonlinear systems by means of: 
 - iLQG
 - EKF
 - Gradient descent on Directed Information
