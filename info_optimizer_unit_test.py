@@ -5,6 +5,7 @@ Unit tests for the information optimization
 ''' 
 import matplotlib.pyplot as plt
 import copy
+from two_mass_sys import *
 
 def d_sigma_test():
     # Verify that the gradient of precision matrix is approx equal the actual change.
@@ -28,7 +29,6 @@ def d_sigma_test():
         Sigma_trj1 = copy.deepcopy(inf_opt.Sigma_trj)
         for n in range(sys.N+1):
             d_sigma_trj1[par][n,:,:] = -Sigma_trj1[n,:,:].dot(d_gamma_trj1[par][n,:,:]).dot(Sigma_trj1[n,:,:])  
-
     
 
     # Change params, and verify change approx equal to grad
@@ -73,13 +73,13 @@ def DI_grad_test():
     # Verify the directed info calc is correct
     
     params = OrderedDict()
-    params['k1'] = 80
+    params['k1'] = 60
     params['k2'] = 80
-    sys = two_mass_sys(N=125, params = params, x_w_cov = 1e-5)
-    iLQR_ctrl = iLQR(sys)
+    sys = two_mass_sys(N = 125, params = params, x_w_cov = 1e-4)
+    iLQR_ctrl = iLQR(sys, trj_decay = 0.0, min_regu = 1e-2, state_regu = 1e-2)
     inf_opt = info_optimizer(iLQR_ctrl)
-
-    iLQR_ctrl.run()
+    
+    iLQR_ctrl.run(regu = 5e-2, expected_cost_redu_thresh = 1e-3, do_plots = True, redu_thresh = 0.0)
     
     ddi_1 = {par:0.0 for par in params}
     ddi_2 = {par:0.0 for par in params}
@@ -89,7 +89,7 @@ def DI_grad_test():
     
     for par in params:
         x_trj1,_ = inf_opt.rollout_and_update_traj_gradients(par)
-        ddi_1[par] = inf_opt.grad_directed_info_old(par) 
+        ddi_1[par] = inf_opt.grad_directed_info(par) 
 
     # Change params, and verify change approx equal to grad
     d1 = 1.0
@@ -102,7 +102,7 @@ def DI_grad_test():
     
     for par in params:
         x_trj2, _ = inf_opt.rollout_and_update_traj_gradients(par)
-        ddi_2[par] = inf_opt.grad_directed_info_old(par) 
+        ddi_2[par] = inf_opt.grad_directed_info(par) 
         
     print('dDI_dk1: {}'.format(ddi_1['k1']))
     print('dDI_dk2: {}'.format(ddi_1['k2']))

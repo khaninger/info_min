@@ -1,12 +1,13 @@
 from info_optimizer import *
+from two_mass_sys import *
 import numpy as np
-def grad_descent_test(max_iter = 100, D = 40.0, k10=50, k20=20, x_w_cov = 1e-4, beta = 5e4):
+def grad_descent_test(max_iter = 100, D = 65.0, k10=50, k20=20, x_w_cov = 1e-4, beta = 5e4):
     # Setup problem and call iLQR
     params = OrderedDict()
     params['k1'] = k10
     params['k2'] = k20
     sys = two_mass_sys(N = 125, params = params, dt = 0.02, x_w_cov = x_w_cov)
-    iLQR_ctrl = iLQR(sys)
+    iLQR_ctrl = iLQR(sys, min_regu = 1e-2, state_regu = 1e-2)
     inf_opt = info_optimizer(iLQR_ctrl)
 
     threshold = -0.5
@@ -20,7 +21,7 @@ def grad_descent_test(max_iter = 100, D = 40.0, k10=50, k20=20, x_w_cov = 1e-4, 
     param_hist = {par : np.empty(0) for par in params}
     while total_improvement > threshold or iters < 5:
         print("\nIn the {}th parameter optimization iteration".format(iters))
-        iLQR_ctrl.run(max_iter = 15, do_plots = False, do_final_plot = False)
+        iLQR_ctrl.run(max_iter = 50, expected_cost_redu_thresh = 1e-5, redu_thresh = 1e-5, do_plots = False, do_final_plot = False)
         DI_temp, perf_temp = inf_opt.performance()
 
         perf_headroom = D-perf_temp
@@ -58,7 +59,12 @@ def grad_descent_test(max_iter = 100, D = 40.0, k10=50, k20=20, x_w_cov = 1e-4, 
         sys.update_params(params)
     return DI_hist, perf_hist, param_hist
             
-def param_grid(k1_grid, k2_grid):
+def param_grid(k1_grid = None, k2_grid = None, grid_size = 5):
+    if k1_grid is None:
+        k1_grid = np.linspace(20, 120, num = grid_size)
+    if k2_grid is None:
+        k2_grid = np.linspace(3, 50, num = grid_size)  
+    
     params = OrderedDict()
     grid_size = k1_grid.shape[0]
     k1_grid = k1_grid
@@ -74,10 +80,11 @@ def param_grid(k1_grid, k2_grid):
             params['k2'] = k2
             
             sys = two_mass_sys(N = 125, params = params, dt = 0.02, x_w_cov = 1e-4)
-            iLQR_ctrl = iLQR(sys) 
+            iLQR_ctrl = iLQR(sys, trj_decay = 0.0, min_regu = 1e-2, state_regu = 1e-2)
+    
             inf_opt = info_optimizer(iLQR_ctrl)
+            iLQR_ctrl.run(max_iter = 50, regu = 5e-2, expected_cost_redu_thresh = -1e-3, redu_thresh = 0.0)
             
-            iLQR_ctrl.run(max_iter = 15, do_plots = False, do_final_plot = False)
             DI_temp, perf_temp = inf_opt.performance(num_iter = 2)
                         
             perf[i,j] = perf_temp
@@ -168,10 +175,6 @@ def simple_ilqg():
     '''
 np.set_printoptions(precision=3)
 
-#grid_size = 5
-#k1_grid = np.linspace(20, 120, num = grid_size)
-#k2_grid = np.linspace(3, 50, num = grid_size)  
-#perf, DI = param_grid(k1_grid, k2_grid)
-
-grad_descent_test(D = 30.0)
+#perf, DI = param_grid()
+grad_descent_test(D = 65.0)
 #multiple_pts_compare()

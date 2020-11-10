@@ -37,21 +37,25 @@ The classes iLQG, derivatives based on Underactuated course notes by Russ Tedrak
 
 import matplotlib.pyplot as plt
 from pydrake.all import (Variable, SymbolicVectorSystem, VectorSystem, DiagramBuilder,
-                         LogOutput, Simulator, ConstantVectorSource,
-                         MathematicalProgram, Solve, SnoptSolver, PiecewisePolynomial)
+                         LogOutput, Simulator, ConstantVectorSource)
 import pydrake.symbolic as sym
 import numpy as np
 from collections import OrderedDict    
 from time import sleep
+import copy
 
 class derivatives():
+    ''' 
+    Class for derivatives of the system dynamics, cost (as required for iLQG)
+    as well as 2nd derivative w.r.t. the design parameters phi.
+    ''' 
     def __init__(self, sys):
         self.x_sym = np.array([sym.Variable("x_{}".format(i)) for i in range(sys.n_x)])
         self.u_sym = np.array([sym.Variable("u_{}".format(i)) for i in range(sys.n_u)])
         x = self.x_sym
         u = self.u_sym
         self.sys = sys
-        if isinstance(sys, two_mass_sys): 
+        if self.sys.sym_derivs: 
             self.phi_sym = np.array([sym.Variable(list(sys.phi.keys())[i]) for i in range(len(sys.phi))])
             phi = self.phi_sym
         
@@ -66,7 +70,7 @@ class derivatives():
         self.l_final_x = sym.Jacobian([l_final], x).ravel()
         self.l_final_xx = sym.Jacobian(self.l_final_x, x)
         
-        if isinstance(sys, two_mass_sys):
+        if self.sys.sym_derivs:
             self.f_x = {}
             self.f_u = {}
             self.g_x = {}
@@ -95,7 +99,7 @@ class derivatives():
         l_uu = sym.Evaluate(self.l_uu, env)
         
         
-        if isinstance(self.sys, two_mass_sys):
+        if self.sys.sym_derivs:
             mode = self.sys.mode_check(x)
             f_x = sym.Evaluate(self.f_x[mode], env)
             f_u = sym.Evaluate(self.f_u[mode], env)
@@ -117,7 +121,7 @@ class derivatives():
         if u is not None: env.update({self.u_sym[i]: u[i] for i in range(u.shape[0])})
         env.update({self.phi_sym[i]: list(self.sys.phi.values())[i] for i in range(len(self.sys.phi))})
 
-        if isinstance(self.sys, two_mass_sys):
+        if self.sys.sym_derivs:
             mode = self.sys.mode_check(x)        
             f_x = sym.Evaluate(self.f_x[mode], env)
             g_x = sym.Evaluate(self.g_x[mode], env)
@@ -130,7 +134,7 @@ class derivatives():
         if u is not None: env.update({self.u_sym[i]: u[i] for i in range(u.shape[0])})        
         env.update({self.phi_sym[i]: list(self.sys.phi.values())[i] for i in range(len(self.sys.phi))})
         
-        if isinstance(self.sys, two_mass_sys):
+        if self.sys.sym_derivs:
             mode = self.sys.mode_check(x) 
             f_x_phi = sym.Evaluate(self.f_x_phi[mode], env)
             g_x_phi = sym.Evaluate(self.g_x_phi[mode], env)
@@ -139,143 +143,14 @@ class derivatives():
             g_x_phi = np.zeros((self.sys.n_y*self.sys.n_x,3))
         return f_x_phi, g_x_phi
 
-class two_mass_sys():
-    def __init__(self, N, params = None, dt = 0.02, x_w_cov = 1e-4):
-        self.N = N
-        self.n_x = 5
-        self.n_u = 1
-        self.n_y = 2
-        self.dt = dt
-       
-        self.modes = ('free_space', 'contact')
-        self.x0 = np.array([0.0, 0.0, 0.0, 0.0, 0.75])
-
-        self.V = np.array([5e-3, 5e-2])
-        self.W = 1.0*np.array([1e-7, 1e-2, 1e-7, 4e-2, 0])
-        self.W0 = np.array([3e-4, 3e-4, 3e-4, 3e-4, x_w_cov])
-                
-        if params: 
-            self.phi = params
-        else:
-            self.phi = OrderedDict()
-            self.phi['k1'] = 100
-            self.phi['k2'] = 50
-        
-        self.deriv = derivatives(self)
-        
-        self.x_trj, self.u_trj = None, None
-        self.rollout()
-
-    def reset(self):
-        x_traj_new = np.zeros((self.N+1, self.n_x))
-        x_traj_new[0,:] = self.x0 + np.multiply(np.sqrt(self.W0), np.random.randn(self.n_x))
-        u_traj_new = np.zeros((self.N, self.n_u))
-        return x_traj_new, u_traj_new
-
-    def rollout(self):
-        self.u_trj = np.random.randn(self.N, self.n_u)*0.01
-        self.x_trj, _ = self.reset()
-        for i in range(self.N):
-            self.x_trj[i+1,:] = self.dyn(self.x_trj[i,:],self.u_trj[i], noise = True)   
-
-    def dyn(self, x, u, phi = None, mode = None, noise = False):
-        # Produce the next step given x and u, optionally with noise
-        # TODO: change to just taking context
-        # x = [position, velocity, position, velocity, wall_pos], u = [force], mode = free_space || contact
-        m = sym if x.dtype == object else np # check for autodiff            
-        dt = self.dt
-        m1, b1 = 0.2, 9.8
-        m2, b2 = 0.11, 5.6 
-
-        if phi is None:
-            k1 = self.phi['k1']
-            k2 = self.phi['k2']
-        else:
-            k1 = phi[0]
-            k2 = phi[1]
-
-        if not mode:
-            mode = self.mode_check(x)
-
-        if mode == 'free_space':
-            x_next = x+np.array([dt*x[1], dt/m1*(u[0]-b1*x[1]-k1*(x[0]-x[2])), dt*x[3], dt/m2*(-b2*x[3]+k1*(x[0]-x[2])), 0.0], dtype=object)
-        elif mode == 'contact':
-            x_next = x+np.array([dt*x[1], dt/m1*(u[0]-b1*x[1]-k1*(x[0]-x[2])), dt*x[3], dt/m2*(-b2*x[3]+k1*(x[0]-x[2])-k2*(x[2]-x[4])), 0.0], dtype=object)
-            
-        if noise:
-            noise = np.multiply(np.sqrt(self.W), np.random.randn(self.n_x))
-            x_next += noise
-        return x_next 
-
-    def mode_check(self,x):
-        # Helper function to determine what discrete mode the system is in
-        if x[2] > x[-1]:
-            return 'contact'
-        else:
-            return 'free_space'
-
-    def cost_stage(self, x, u):
-        # Cost at an individual time step
-        contact_force = self.smax(self.phi['k2']*(x[2]-x[-1]))
-        c = 0.05*(3-contact_force)**2 + 0.05*(x[2]-x[-1])**2+ 0.1*x[1]**2 + 0.1*x[3]**2+1e-8*u**2
-        #c = 1/self.phi['k2']**2*(3-self.phi['k2']*(x[2]-x[-1]))**2 + 0.1*x[1]**2 + 0.1*x[3]**2+1e-8*u**2
-
-        return c 
-
-    def cost_final(self, x):
-        contact_force = self.smax(self.phi['k2']*(x[2]-x[-1]))
-        c = 0.05*(3-contact_force)**2 + 0.05*(x[2]-x[-1])**2 + 0.1*x[1]**2 + 0.1*x[3]**2
-        
-        return 1.0*c     
-
-    def smax(self, x, beta = 1): #Softmax function
-        m = sym if x is object else np # check for autodiff            
-        return 0.5*(m.sqrt(x**2+beta**2)+x)
-    
-    def obs(self, x, mode = None, noise = False, phi = None):
-        # Return the observations; depending on mode and if input is symbolic var
-        m = sym if x.dtype == object else np # check for autodiff 
-        if phi is None:
-            k1 = self.phi['k1']
-            k2 = self.phi['k2']
-        else:
-            k1 = phi[0]
-            k2 = phi[1]           
-        if not mode:
-            mode = self.mode_check(x)
-        if mode == 'free_space': 
-            y = [x[0], k1*(x[2]-x[0])]
-        elif mode == 'contact':
-            y = [x[0], k1*(x[2]-x[0])]
-        if noise:
-            y += np.multiply(np.sqrt(self.V), np.random.randn(2))
-        return y
-
-    def cost(self, x_trj = None, u_trj = None):
-        # Evaluates the cost for a trajectory
-        cost_trj = 0.0
-        if x_trj is None:
-            for i in range(self.u_trj.shape[0]):
-                cost_trj += self.cost_stage(self.self.x_trj[i,:], self.u_trj[i,:])
-            cost_trj += self.cost_final(self.x_trj[-1,:])  
-        else:
-            for i in range(u_trj.shape[0]):
-                cost_trj += self.cost_stage(x_trj[i,:], u_trj[i,:])
-            cost_trj += self.cost_final(x_trj[-1,:])  
-        return cost_trj
-        
-    def update_params(self, params):
-        self.phi = params
-        self.deriv = derivatives(self)
-
 class iLQR(VectorSystem):
     ''' 
     Currently; iLQR is written so it can be used as an independent system 
-     (i.e. it can do it's own dynamics calls etc) or as a part of a drake
-     diagram, right now that's switched by the simulator argument - if 
-     there is none, it's standalone.
+    (i.e. it can do it's own dynamics calls etc) or as a part of a drake
+    diagram, right now that's switched by the simulator argument - if 
+    there is none, it's standalone.
     '''
-    def __init__(self, sys, max_regu = 10.0, min_regu = 1e-6,  state_regu = 1e-4, trj_decay = 0.9, simulator = None):
+    def __init__(self, sys, max_regu = 10.0, min_regu = 1e-6, state_regu = 1e-4, trj_decay = 0.8, simulator = None):
         VectorSystem.__init__(self, sys.n_y, sys.n_u)           
         self.sys = sys
         self.ekf = EKF(sys)
@@ -291,6 +166,8 @@ class iLQR(VectorSystem):
         self.K_trj_hist = None #np.zeros([sys.N, sys.n_u, sys.n_x])
         self.Xi_trj = np.zeros([sys.N, sys.n_x, sys.n_x])
     
+        # *_hist is the smoothed, historical state/input trajectories
+        # u/x_trj are trajectories from last rollout
         self.u_trj_hist = None #np.zeros([sys.N, sys.n_u])  # smoothed trajectories
         self.x_trj_hist = None #np.zeros([sys.N+1, sys.n_x])
         self.u_trj = np.zeros([sys.N, sys.n_u])       # current trajectories
@@ -306,6 +183,7 @@ class iLQR(VectorSystem):
         Q_xx = l_xx + f_x.T.dot(V_xx).dot(f_x)
         Q_ux = l_ux + f_u.T.dot(V_xx+state_regu*np.identity(V_xx.shape[0])).dot(f_x) # Regularize, effectively penalize deviation from initial trajectory; per Tassa2012
         Q_uu = l_uu + f_u.T.dot(V_xx).dot(f_u)
+        
         return Q_x, Q_u, Q_xx, Q_ux, Q_uu
         
     def V_terms(Q_x, Q_u, Q_xx, Q_ux, Q_uu, K, k):
@@ -325,48 +203,59 @@ class iLQR(VectorSystem):
         return -Q_u.T.dot(k) - 0.5 * k.T.dot(Q_uu.dot(k))
 
     def soft_update_trj(self):
-        if self.x_trj_hist is not None:
-                self.x_trj_hist = self.trj_decay*self.x_trj_hist + (1-self.trj_decay)*self.x_trj
-                self.u_trj_hist = self.trj_decay*self.u_trj_hist + (1-self.trj_decay)*self.u_trj
-        else:
-                self.x_trj_hist = self.x_trj
-                self.u_trj_hist = self.u_trj
-        self.k_trj_hist = self.k_trj
-        self.K_trj_hist = self.K_trj
+        self.x_trj_hist = self.trj_decay*self.x_trj_hist + (1-self.trj_decay)*self.x_trj
+        self.u_trj_hist = self.trj_decay*self.u_trj_hist + (1-self.trj_decay)*self.u_trj
+        
+        self.k_trj_hist = copy.deepcopy(self.k_trj)
+        self.K_trj_hist = copy.deepcopy(self.K_trj)
 
     def reset(self):
         # Reset all iLQR vars for a new rollout; also the EKF and simulator are stateful
         self.n = 0 
         self.x_trj, self.u_trj = self.sys.reset()
-        self.ekf.filter_init()
+        self.ekf.filter_init(x_init = self.x_trj[0,:])
         if self.simulator is not None:
             self.simulator.get_mutable_context().SetTime(0.0)
             self.simulator.Initialize()
             sleep(3.5)
         #return x_trj_new, u_trj_new
+     
+    def random_rollout(self):
+        self.reset()
+        if self.simulator is not None: # Use simulator; x_trj and u_trj will be updated by DoCalcVectorOutput
+            self.simulator.AdvanceTo((self.sys.N)*self.sys.dt)
+        else:    
+            for n in range(self.sys.N):
+                self.u_trj[n,:] = 0.0001*np.random.rand(self.sys.n_u)
+                self.x_trj[n+1,:] = self.sys.dyn(self.x_trj[n,:], self.u_trj[n,:], noise=True)
+                y = self.sys.obs(self.x_trj[n+1,:], noise=True) #y_{n+1}
+                self.ekf.filter_step(self.u_trj[n,:], y, n)
+                
+        self.x_trj_hist = copy.deepcopy(self.x_trj)
+        self.u_trj_hist = copy.deepcopy(self.u_trj)
+        return self.sys.cost(self.x_trj, self.u_trj)
         
     def forward_pass(self):
+    # Executes a roll-out where system is updated according to the sys.dyn call
         self.reset()
-        
         if self.simulator is not None: # Use simulator; x_trj and u_trj will be updated by DoCalcVectorOutput
-            self.simulator.AdvanceTo((self.sys.N+6)*self.sys.dt)
+            self.simulator.AdvanceTo((self.sys.N)*self.sys.dt)
             x_trj_new = self.x_trj
             u_trj_new = self.u_trj
         else:    
             for n in range(self.sys.N):
-                u_trj_new[n,:] = self.sys.u_trj_hist[n,:]+self.k_trj[n,:]+self.K_trj[n,:].dot(self.ekf.x_hat[n,:]-self.sys.x_trj_hist[n,:])
-                x_trj_new[n+1,:] = self.sys.dyn(x_trj_new[n,:], u_trj_new[n,:], noise=True)
-                y = self.sys.obs(x_trj_new[n+1,:], noise=True) #y_{n+1}
-                self.ekf.filter_step(u_trj_new[n,:], y, n)
-        self.x_trj = x_trj_new
-        self.u_trj = u_trj_new
+                self.u_trj[n,:] = self.u_trj_hist[n,:]+self.k_trj[n,:]+self.K_trj[n,:].dot(self.ekf.x_hat[n,:]-self.x_trj_hist[n,:])
+                self.x_trj[n+1,:] = self.sys.dyn(self.x_trj[n,:], self.u_trj[n,:], noise=True)
+                y = self.sys.obs(self.x_trj[n+1,:], noise=True) #y_{n+1}
+                self.ekf.filter_step(self.u_trj[n,:], y, n)
         
-        return x_trj_new, u_trj_new
+        return self.x_trj, self.u_trj
             
     def DoCalcVectorOutput(self, context, u, x, output):
+    # This function is for when iLQG is used as a DRAKE system in a diagram
         y_n = u      # Input to ctrl is ouptut of plant
         n = self.n
-        if n is 0: # First step of iLQR since a reset; init filter with first measurement
+        if n is 0:   # First step of iLQR since a reset; init filter with first measurement
             self.ekf.filter_init(y = y_n)
         elif n >= self.sys.N: # Simulator is not a fixed step size, can take smaller steps -> more calls to iLQR
             #print('Too many steps for iLQR to track; n = {}'.format(n))
@@ -386,12 +275,8 @@ class iLQR(VectorSystem):
         self.n = n+1
         
     def backward_pass(self, regu = 0.1, Xi_trj = None):
-        if self.u_trj_hist is None: #if there's no smoothed ref, use last traj
-            x_trj = self.x_trj
-            u_trj = self.u_trj
-        else:
-            u_trj = self.u_trj_hist #smoothed references
-            x_trj = self.x_trj_hist #smoothed refernces
+        x_trj = self.x_trj_hist
+        u_trj = self.u_trj_hist
         deriv = self.sys.deriv
         
         expected_cost_redu = 0.0
@@ -399,9 +284,10 @@ class iLQR(VectorSystem):
         V_x, V_xx = deriv.final(x_trj[-1])
         
         for n in range(u_trj.shape[0]-1, -1, -1):
-            l_x, l_u, l_xx, l_ux, l_uu, f_x, f_u = deriv.stage(x_trj[n],u_trj[n])
+            l_x, l_u, l_xx, l_ux, l_uu, f_x, f_u = deriv.stage(x_trj[n,:],u_trj[n,:])
             Q_x, Q_u, Q_xx, Q_ux, Q_uu = iLQR.Q_terms(l_x, l_u, l_xx, l_ux, l_uu, f_x, f_u, V_x, V_xx, state_regu = self.state_regu)
             Q_uu_regu = Q_uu + np.eye(Q_uu.shape[0])*regu  #Regularization in Q_uu, effective additional control cost
+
             k, K = iLQR.gains(Q_uu_regu, Q_u, Q_ux)
             change_in_gains[0] += np.sum(abs(self.k_trj[n,:] - k))
             change_in_gains[1] += np.sum(abs(self.K_trj[n,:] - K))
@@ -418,7 +304,7 @@ class iLQR(VectorSystem):
         #plt.figure(figsize=(8,5), dpi =80)
         #ax = plt.gca()
 
-        if isinstance(self.sys, two_mass_sys):
+        if self.sys.sym_derivs:
             ind = [0, 2, 4]
         else:
             ind = [4, 2, self.sys.door_index]
@@ -486,9 +372,9 @@ class iLQR(VectorSystem):
         plt.show()
         #plt.waitforbuttonpress(0)
         
-    def run(self, regu=0.01, max_iter=50, do_plots = False, do_final_plot = False, do_fancy_plot = False, expected_cost_redu_thresh = 5):  
+    def run(self, regu=0.01, max_iter=50, do_plots = False, do_final_plot = False, do_fancy_plot = False, expected_cost_redu_thresh = 0.1, redu_thresh = 1e-5):  
         # Setup traces
-        cost_trace = [1e8]
+        cost_trace = [self.random_rollout()]
         expected_cost_redu_trace = []
         redu_ratio_trace = [1]
         redu_trace = []
@@ -503,34 +389,33 @@ class iLQR(VectorSystem):
             # Backward and forward pass
             expected_cost_redu, change_in_gains = self.backward_pass(regu)
             self.forward_pass()
-
-            # Evaluate new trajectory
+            
+            # Logging
             cost_trace.append(self.sys.cost(self.x_trj, self.u_trj))
             redu_trace.append(cost_trace[-2] - cost_trace[-1])
             redu_ratio_trace.append(redu_trace[-1] / abs(expected_cost_redu+1e-8))
             expected_cost_redu_trace.append(expected_cost_redu)
-            
+
             #If there is a reduction; accept traj and reduce control regularization
-            if redu_trace[-1] > 1e-5:
-                regu *= 0.9
+            if redu_trace[-1] > redu_thresh:
+                regu *= 0.8
                 self.soft_update_trj()
             else: 
                 regu *= 1.2
-                self.k_trj = self.k_trj_hist # Roll-back the ctrl gains!
-                self.K_trj = self.K_trj_hist
+                #if self.k_trj_hist is not None:
+                #    self.k_trj = self.k_trj_hist # Roll-back the ctrl gains!
+                #    self.K_trj = self.K_trj_hist
             regu = min(max(regu, self.min_regu), self.max_regu)
             regu_trace.append(regu)
-            
-            if do_plots: self.plot(x_trj_new, u_trj_new)
+            if do_plots: self.plot(self.x_trj, self.u_trj)
 
             # Early termination if expected improvement is small
             if expected_cost_redu <= expected_cost_redu_thresh:
                 print('Expected improvement small: stopping iLQR')
                 break
-        if do_final_plot: self.plot(x_trj_new, u_trj_new)
+        if do_final_plot: self.plot(self.x_trj, self.u_trj)
         if do_fancy_plot: self.fancy_plot(cost_trace, regu_trace, redu_ratio_trace, redu_trace, expected_cost_redu_trace)
         return self.x_trj, self.u_trj, cost_trace, regu_trace, redu_ratio_trace, redu_trace    
-
 
 class EKF():
     def __init__(self, sys, min_cov = 1e-10, max_cov = 1e10):
@@ -544,8 +429,11 @@ class EKF():
         self.min_cov = min_cov
         self.max_cov = max_cov
         
-    def filter_init(self, y = None):
-        x_pred = self.sys.x0
+    def filter_init(self, y = None, x_init = None):
+        if x_init is None:
+            x_pred = self.sys.x0
+        else:
+            x_pred = x_init
         P_pred = np.diag(self.W0)
         
         # First step correction
@@ -562,8 +450,7 @@ class EKF():
         self.P[0,:,:] = P_corr
 
     def filter_step(self, u_prev, y, n):
-        #print('Filter step with n: {}'.format(n))
-        # Should be called with u_n, y_{n+1}, will update x_hat_{n+1} and P_{n+1}
+    # Should be called with u_n, y_{n+1}, will update x_hat_{n+1} and P_{n+1}
         P_prev = self.P[n,:,:]
         x_prev = self.x_hat[n,:]
         x_pred = self.sys.dyn(x_prev, u_prev)
@@ -573,11 +460,6 @@ class EKF():
         P_pred = f_x.dot(P_prev).dot(f_x.T)+np.diag(self.W)
         residual = y - self.sys.obs(x_pred)
         residual_cov = g_x.dot(P_pred).dot(g_x.T)+np.diag(self.V)
-        
-        # Make sure residual covarance is not too poorly conditioned.
-        # u, s, vh = np.linalg.svd(residual_cov, full_matrices=True)
-        # np.clip(s, self.min_cov, self.max_cov)
-        # residual_cov = np.dot(u * s, vh)
         
         obs_gain = P_pred.dot(g_x.T).dot(np.linalg.inv(residual_cov))
         x_corr = x_pred + obs_gain.dot(residual)
@@ -636,17 +518,17 @@ class info_optimizer():
         di_trj, perf_trj = self.performance_trj()
         x_trj_new, u_trj_new = self.iLQR.forward_pass()
         
-        plt.clf()
-        plt.figure(figsize=(5,7), dpi =80)
+        plt.figure(figsize=(5,7), dpi =150)
 
-        if isinstance(self.sys, two_mass_sys):
+        if self.sys.door_index is not None:
             ind = [0, 2, 4]
         else:
             ind = [4, 2, self.sys.door_index]
 
         ax = plt.subplot(3,1,1)
         plt.grid(True)
-        '''
+
+        ''' Plot was a bit cluttered with additional states
         plt.plot(x_trj_new[:-1,ind[0]],'m', label = 'x_1 true')
         plt.plot(self.ekf.x_hat[:-1,ind[0]],'m-.', label = 'x_1 est')
         cov = np.sqrt(self.ekf.P[:-1,ind[0],ind[0]])
@@ -656,7 +538,7 @@ class info_optimizer():
         plt.plot(self.ekf.x_hat[:-1,ind[1]],'b-.', label = 'x_2 est')
         cov = np.sqrt(self.ekf.P[:-1,ind[1],ind[1]])
         ax.fill_between(range(self.sys.N), (self.ekf.x_hat[:-1,ind[1]]-cov), (self.ekf.x_hat[:-1,ind[1]]+cov), color='b', alpha=.25)
-'''
+        '''
         plt.plot(x_trj_new[1:-1,ind[2]],'k', label = 'door angle true')
         plt.plot(self.ekf.x_hat[1:-1,ind[2]],'k-.', label = 'door angle estimate')
         cov = np.sqrt(self.ekf.P[1:-1,ind[2],ind[2]])
@@ -726,7 +608,7 @@ class info_optimizer():
         print('  Total Cost       {:>6.2f} +/- {:>3.2f}'.format( np.mean(perf), np.std(perf)))
         return np.mean(di), np.mean(perf)
         
-    def performance_trj(self, num_iter = 5):
+    def performance_trj(self, num_iter = 1):
         # Calculate the directed info of the control trajectory currently saved in iLQR        
         di_trj = np.ones((num_iter, self.sys.N), dtype=np.double)
         perf_trj = np.zeros((num_iter, self.sys.N), dtype=np.double)
@@ -770,7 +652,7 @@ class info_optimizer():
                 
         return d_gamma_trj
     
-    def grad_directed_info(self,par, d_gamma_trj = None):
+    def grad_directed_info_alt(self,par, d_gamma_trj = None):
         # Assumes the sys linearization and dC, dA are current. 
         di_grad = 0
         if d_gamma_trj is None: d_gamma_trj = self.gamma_grad(par)
@@ -791,18 +673,9 @@ class info_optimizer():
             ASAW_inv = np.linalg.inv(A.dot(Sigma).dot(A.T)+W)
             di_grad += 0.5*np.trace(ASAW_inv.dot(A.dot(Sigma).dot(d_gamma_trj[t,:,:]).dot(Sigma).dot(A.T)+dA.dot(Sigma).dot(A.T)+A.dot(Sigma).dot(dA.T)))
             di_grad += 0.5*np.trace(d_gamma_trj[t,:,:].dot(Sigma))
-            #if par is 'k2':
-                #print('sig_trj', str(np.linalg.eigvals(Sigma_trj[t,:,:])))
-                #print('AWA', str(np.linalg.eigvals(A.T.dot(W_inv_reg).dot(A))))
-                #print('AT', str((A.T)))
-                #print('Winv', str((W_inv_reg)))
-                #print('AWA', str((A.T.dot(W_inv_reg).dot(A))))
-               # print('gawa_inv', str(np.linalg.eigvals(GAWA_inv)))
-                #print('gawa_inv*dgamma,    ', str(np.linalg.eigvals(GAWA_inv.dot(d_gamma_trj[t,:,:]))))
-                #print(dA)
         return di_grad
     
-    def grad_directed_info_old(self,par, d_gamma_trj = None):
+    def grad_directed_info(self,par, d_gamma_trj = None):
         di_grad = 0
         if d_gamma_trj is None: d_gamma_trj = self.gamma_grad(par)
         Sigma_trj = self.Sigma_trj
@@ -820,15 +693,6 @@ class info_optimizer():
             
             GAWA_inv = np.linalg.inv(np.linalg.inv(Sigma_trj[t,:,:])+A.T.dot(W_inv_reg).dot(A))
             di_grad += 0.5*np.trace(GAWA_inv.dot(d_gamma_trj[t,:,:]+dA.T.dot(W).dot(A)+A.T.dot(W).dot(dA)))
-            #if par is 'k2':
-                #print('sig_trj', str(np.linalg.eigvals(Sigma_trj[t,:,:])))
-                #print('AWA', str(np.linalg.eigvals(A.T.dot(W_inv_reg).dot(A))))
-                #print('AT', str((A.T)))
-                #print('Winv', str((W_inv_reg)))
-                #print('AWA', str((A.T.dot(W_inv_reg).dot(A))))
-               # print('gawa_inv', str(np.linalg.eigvals(GAWA_inv)))
-                #print('gawa_inv*dgamma,    ', str(np.linalg.eigvals(GAWA_inv.dot(d_gamma_trj[t,:,:]))))
-                #print(dA)
         return di_grad
      
     def grad_barrier(self,par,D, d_gamma_trj = None):
@@ -855,7 +719,7 @@ class info_optimizer():
                 self.rollout_and_update_traj_gradients(par)
                 d_gamma_trj = self.gamma_grad(par)
                 bar[par][n] =  beta*self.grad_barrier(par, D, d_gamma_trj)
-                grad[par][n] = self.grad_directed_info_old(par, d_gamma_trj)
+                grad[par][n] = self.grad_directed_info(par, d_gamma_trj)
             grad_sum += np.mean(grad[par])
             
         for par in self.sys.phi:

@@ -1,0 +1,95 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <model name="simple_hinge">
+    <link name="base">
+      <visual name="right_wall">
+        <pose> 0 0.292 0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.3 0.016 0.783</size>
+          </box>
+        </geometry>
+      </visual>
+      <collision name="right_wall">
+        <pose> 0 0.292 0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.3 0.016 0.783</size>
+          </box>
+        </geometry>
+      </collision>
+    </link>
+    <!-- joint between cupboard_body and left_door -->
+    <joint name="right_door_hinge" type="revolute">
+      <child>right_door</child>
+      <parent>base</parent>
+      <pose>-0.008 0.1395 0 0 0 </pose>
+      <axis>
+        <xyz> 0 0 1 </xyz>
+        <limit>
+          <effort>0</effort>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+        </dynamics>
+      </axis>
+    </joint>
+    <link name="right_door">
+      <pose> 0.158 0.1445 0 0 0 0</pose>
+      <inertial>
+        <mass>1</mass>
+        <inertia>
+          <ixx>0.01042</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.00542</iyy>
+          <iyz>0</iyz>
+          <izz>0.00542</izz>
+        </inertia>
+      </inertial>
+      <visual name="cylinder">
+        <pose> 0.05 -0.1245 0 0 0 0</pose>
+        <geometry>
+          <cylinder>
+            <length>0.14</length>
+            <radius>0.005</radius>
+          </cylinder>
+        </geometry>
+      </visual>
+      <visual name="slab">
+        <geometry>
+          <box>
+            <size>0.016 0.279 0.815</size>
+          </box>
+        </geometry>
+        <material>
+          <diffuse>1 0 0 1.0</diffuse>
+        </material>
+      </visual>
+      <collision name="cylinder">
+        <pose> 0.05 -0.1245 0 0 0 0</pose>
+        <geometry>
+          <cylinder>
+            <length>0.14</length>
+            <radius>0.005</radius>
+          </cylinder>
+        </geometry>
+      </collision>
+      <collision name="slab">
+        <geometry>
+          <box>
+            <size>0.016 0.279 0.815</size>
+          </box>
+        </geometry>
+      </collision>
+    </link>
+    <joint name="handle_jt" type="fixed">
+      <child>handle</child>
+      <parent>right_door</parent>
+      <pose>0 0.0 0 0 0 </pose>
+    </joint>
+    <link name="handle">
+      <pose> 0.2 0.05 0.1 0 -3.1415 0</pose>
+    </link>
+  </model>
+</sdf>

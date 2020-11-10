@@ -42,7 +42,7 @@ class iiwa_sys():
     def __init__(self, builder, dt = 5e-4, N = 150, params = None, trj_decay = 0.7, x_w_cov = 1e-5, door_angle_ref = 1.0, visualize = False):
         self.plant_derivs = MultibodyPlant(time_step=dt)
         parser = Parser(self.plant_derivs)
-        self.derivs_iiwa, _, _ = self.add_models(self.plant_derivs, parser)
+        self.derivs_iiwa, _, _ = self.add_models(self.plant_derivs, parser, params = params)
         self.plant_derivs.Finalize()
         self.plant_derivs_context = self.plant_derivs.CreateDefaultContext()
         self.plant_derivs.get_actuation_input_port().FixValue(self.plant_derivs_context, [0., 0., 0., 0., 0., 0., 0.])
@@ -51,11 +51,14 @@ class iiwa_sys():
 
         self.plant, scene_graph = AddMultibodyPlantSceneGraph(builder, time_step = dt)
         parser = Parser(self.plant, scene_graph)
-        self.iiwa, self.hinge, self.bushing = self.add_models(self.plant, parser)
+        self.iiwa, self.hinge, self.bushing = self.add_models(self.plant, parser, params = params)
         self.plant.Finalize() # Finalize will assign ports for compatibility w/ the scene_graph; could be cause of the issue w/ first order taylor. 
         
         self.meshcat = ConnectMeshcatVisualizer(builder, scene_graph, zmq_url=zmq_url)
-
+        
+        self.sym_derivs = False # If system should use symbolic derivatives; if false, autodiff
+        self.custom_sim = False # If rollouts should be gathered with sys.dyn() calls
+        
         nq = self.plant.num_positions()
         nv = self.plant.num_velocities()
         self.n_x = nq + nv
@@ -66,12 +69,13 @@ class iiwa_sys():
         self.dt = dt
         self.decay = trj_decay
         self.V = 1e-2*np.ones(self.n_y)
-        self.W = np.concatenate((1e-6*np.ones(nq), 1e-4*np.ones(nv)))
+        self.W = np.concatenate((1e-7*np.ones(nq), 1e-4*np.ones(nv)))
         self.W0 = np.concatenate((1e-9*np.ones(nq),  1e-6*np.ones(nv)))
         self.x_w_cov = x_w_cov
         self.door_angle_ref = door_angle_ref
         
-        self.q0 = np.array([-3.12, -0.27, 0.52, -3.11, 1.22, -0.75, -1.56, 0.55])
+        self.q0 = np.array([-3.12, -0.17, 0.52, -3.11, 1.22, -0.75, -1.56, 0.55])
+        #self.q0 = np.array([-3.12, -0.27, 0.52, -3.11, 1.22, -0.75, -1.56, 0.55])
         self.x0 = np.concatenate((self.q0, np.zeros(nv)))
         self.door_index = None
         
@@ -110,30 +114,31 @@ class iiwa_sys():
                     plant.GetFrameByName("handle"),
                     [50, 50, 50], # Torque stiffness
                     [2., 2., 2.], # Torque damping
-                    [1e4, 5e4, 5e4], # Linear stiffness
-                    [80, 80, 0], # Linear damping
+                    [5e4, 5e4, 5e4], # Linear stiffness
+                    [80, 80, 80], # Linear damping
                 )
         else:
+                print('setting custom stiffnesses')
                 bushing = LinearBushingRollPitchYaw_[float](   
                     plant.GetFrameByName("iiwa_link_7"), 
                     plant.GetFrameByName("handle"),
                     [params['k4'], params['k5'], params['k6']], # Torque stiffness
-                    [2.5, 2.5, 2.5], # Torque damping
+                    [2, 2, 2], # Torque damping
                     [params['k1'], params['k2'], params['k3']], # Linear stiffness
-                    [150, 150, 150], # Linear damping
+                    [100, 100, 100], # Linear damping
         )
         bushing_element = plant.AddForceElement(bushing)
         
         return iiwa, hinge, bushing
 
     def cost_stage(self, x, u):
-        ctrl = 1.2e-5*np.sum(u**2)
-        pos = 1.0*(x[self.door_index]-self.door_angle_ref)**2 
-        vel = 1.5e-5*np.sum(x[8:]**2)
+        ctrl = 1e-5*np.sum(u**2)
+        pos = 15.0*(x[self.door_index]-self.door_angle_ref)**2 
+        vel = 1e-5*np.sum(x[8:]**2)
         return pos+ctrl+vel
 
     def cost_final(self, x):
-        return 50*(1.0*(x[self.door_index]-self.door_angle_ref)**2 + np.sum(2.5e-5*x[8:]**2))
+        return 50*(1.0*(x[self.door_index]-self.door_angle_ref)**2 + np.sum(2.5e-4*x[8:]**2))
 
     def get_deriv(self, x, u):
         self.plant_derivs.SetPositionsAndVelocities(self.plant_derivs_context, x)
@@ -209,25 +214,33 @@ class iiwa_sys():
 
 if __name__== "__main__":
     params = OrderedDict()
-    params['k1'] = 35
-    params['k2'] = 35
-    params['k3'] = 35
+    params['k4'] = 50
+    params['k5'] = 50
+    params['k6'] = 50
     # High stiff
-    #params['k4'] = 1e6
-    #params['k5'] = 1e6
-    #params['k6'] = 1e6
+    params['k1'] = 1e6
+    params['k2'] = 1e6
+    params['k3'] = 1e6
 
+
+    grad1 = [-0.014, 0.243, 0.2673]
+    grad2 = [0.005, 0.023, 0.069]
+    grad = grad2
     # Optimized
-    step = 3.5e5
-    params['k4'] = 1e6 - step*(-0.0136)
-    params['k5'] = 1e6 - step*0.2429
-    params['k6'] = 1e6 - step*0.2673
+    step = 3e6
+    #params['k1'] -= step*grad[0]
+    #params['k2'] -= step*grad[1]
+    #params['k3'] -= step*grad[2]
+    #params['k1'] = 1e4
+    #params['k2'] = 1e4
+    #params['k3'] = 1e4
+
 
     builder = DiagramBuilder()
     dt = 2.5e-4
     N = 500
-    sys = iiwa_sys(builder, params = params, trj_decay = 0.5, dt = dt, N = N, x_w_cov = 1e-3, door_angle_ref = -0.8)
-    iLQR_ctrl = iLQR(sys, min_regu = 5e-6, state_regu = 0.0)
+    sys = iiwa_sys(builder, params = params, trj_decay = 0.5, dt = dt, N = N, x_w_cov = 1e-5, door_angle_ref = -0.5)
+    iLQR_ctrl = iLQR(sys, min_regu = 5e-5, state_regu = 0.0)
     builder.AddSystem(iLQR_ctrl)
     builder.Connect(sys.plant.get_state_output_port(sys.iiwa), iLQR_ctrl.get_input_port(0))
     builder.Connect(iLQR_ctrl.get_output_port(0), sys.plant.get_actuation_input_port())
@@ -245,19 +258,23 @@ if __name__== "__main__":
     simulator = Simulator(diagram, context)
     simulator.set_target_realtime_rate(1.0)
     simulator.set_publish_every_time_step(True)
+    simulator.get_mutable_integrator().set_fixed_step_mode(True)
+    simulator.get_mutable_integrator().set_maximum_step_size(dt)
+    
     iLQR_ctrl.simulator = simulator
                 
     inf_opt = info_optimizer(iLQR_ctrl)
-    
-    iLQR_ctrl.run(max_iter = 15, regu = 5e-5, expected_cost_redu_thresh = 0.1, do_final_plot = False)
+    print('Tuning LQR')
+    iLQR_ctrl.run(max_iter = 5, regu = 5e-5, expected_cost_redu_thresh = 1.0, do_final_plot = False)
 
-    #print(inf_opt.grad_directed_info_old(0))
-    #print(inf_opt.grad_directed_info_old(1))    
-    #print(inf_opt.grad_directed_info_old(2))   
+    #print(inf_opt.grad_directed_info(0))
+    #print(inf_opt.grad_directed_info(1))    
+    #print(inf_opt.grad_directed_info(2))   
     
+    print('Evaluating')
     inf_opt.plot_w_di()
     
-    
+    print('Recording video')
     # Let's take a video
     sys.meshcat.start_recording()
     iLQR_ctrl.forward_pass()
